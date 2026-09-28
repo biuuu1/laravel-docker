@@ -1,5 +1,6 @@
 <?php
 
+use App\Exceptions\KesalahanPos;
 use App\Http\Middleware\CatatRequest;
 use App\Http\Middleware\JamOperasional;
 use App\Http\Middleware\KunciApiKasir;
@@ -35,4 +36,17 @@ return Application::configure(basePath: dirname(__DIR__))
         $exceptions->shouldRenderJsonWhen(
             fn (Request $request) => $request->is('api/*') || $request->expectsJson(),
         );
+
+        // Satu tempat penerjemahan kesalahan domain menjadi response JSON,
+        // sehingga controller tidak perlu try-catch.
+        $exceptions->render(function (KesalahanPos $e, Request $request) {
+            if (! ($request->is('api/*') || $request->expectsJson())) {
+                return null;
+            }
+
+            return response()->json(array_merge([
+                'kesalahan' => $e->kodeKesalahan(),
+                'pesan' => $e->getMessage(),
+            ], $e->konteks()), $e->kodeHttp());
+        });
     })->create();
