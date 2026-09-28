@@ -6,5 +6,5 @@ namespace App\Contracts;
 
 interface RepositoriMember
 {
+    public function cari(string $kode): ?array;
 }
-

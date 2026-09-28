@@ -6,4 +6,7 @@ namespace App\Contracts;
 
 interface RepositoriProduk
 {
+    public function semua(): array;
+
+    public function cari(int $id): ?array;
 }
