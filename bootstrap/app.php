@@ -1,6 +1,10 @@
 <?php
 
 use App\Http\Middleware\CatatRequest;
+use App\Http\Middleware\JamOperasional;
+use App\Http\Middleware\KunciApiKasir;
+use App\Http\Middleware\PeranKasir;
+use App\Http\Middleware\TolakUserAgentKosong;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -14,13 +18,18 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        // Berlaku untuk seluruh rute pada berkas api.php
+        // Global: berjalan pada SEMUA rute di routes/api.php
         $middleware->api(append: [
             CatatRequest::class,
         ]);
 
-        // Atau daftarkan dengan alias agar dapat dipakai per rute:
-        // $middleware->alias(['catat' => CatatRequest::class]);
+        // Beralias: dipasang per rute atau per grup rute
+        $middleware->alias([
+            'kasir' => KunciApiKasir::class,
+            'peran' => PeranKasir::class,
+            'jam.buka' => JamOperasional::class,
+            'agen' => TolakUserAgentKosong::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(
