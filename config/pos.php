@@ -28,4 +28,20 @@ return [
     'log' => [
         'ambang_ms' => (float) env('POS_LOG_AMBANG_MS', 100),
     ],
+
+    /*
+     * Daftar kunci API kasir. HANYA UNTUK LATIHAN MODUL 3.
+     * Autentikasi sesungguhnya memakai Laravel Sanctum pada modul berikutnya.
+     * Jangan pernah menaruh kredensial produksi di repositori.
+     */
+    'kasir' => [
+        env('POS_KUNCI_KASIR', 'kasir-dev-001') => [
+            'nama' => 'Kasir Dev',
+            'peran' => 'kasir',
+        ],
+        env('POS_KUNCI_SUPERVISOR', 'spv-dev-001') => [
+            'nama' => 'Supervisor Dev',
+            'peran' => 'supervisor',
+        ],
+    ],
 ];
