@@ -4,39 +4,56 @@ declare(strict_types=1);
 
 namespace App\Domain;
 
-final class Uang
+use InvalidArgumentException;
+
+final readonly class Uang
 {
-    public function __construct(
-        public readonly int $jumlah,
-        public readonly string $mataUang = 'IDR',
-    ) {
-        if ($jumlah < 0) {
-            throw new \InvalidArgumentException('Jumlah uang tidak boleh negatif');
+    public function __construct(public int $rupiah)
+    {
+        if ($rupiah < 0) {
+            throw new InvalidArgumentException('Nilai uang tidak boleh negatif.');
         }
+    }
+
+    public static function nol(): self
+    {
+        return new self(0);
     }
 
     public function tambah(self $lain): self
     {
-        $this->pastikanMataUangSama($lain);
-
-        // Kembalikan objek BARU, jangan ubah yang lama (immutable)
-        return new self($this->jumlah + $lain->jumlah, $this->mataUang);
+        return new self($this->rupiah + $lain->rupiah);
     }
 
-    public function kali(int $pengali): self
+    public function kurang(self $lain): self
     {
-        return new self($this->jumlah * $pengali, $this->mataUang);
+        return new self($this->rupiah - $lain->rupiah);
+    }
+
+    public function kali(int $faktor): self
+    {
+        return new self($this->rupiah * $faktor);
+    }
+
+    public function persen(float $persen): self
+    {
+        return new self((int) round($this->rupiah * $persen / 100));
+    }
+
+    public function bulatkanKeAtas(int $kelipatan): self
+    {
+        return new self(
+            (int) (ceil($this->rupiah / $kelipatan) * $kelipatan)
+        );
+    }
+
+    public function kurangDari(self $lain): bool
+    {
+        return $this->rupiah < $lain->rupiah;
     }
 
     public function format(): string
     {
-        return 'Rp ' . number_format($this->jumlah, 0, ',', '.');
-    }
-
-    private function pastikanMataUangSama(self $lain): void
-    {
-        if ($this->mataUang !== $lain->mataUang) {
-            throw new \DomainException('Mata uang berbeda tidak dapat dijumlahkan');
-        }
+        return 'Rp '.number_format($this->rupiah, 0, ',', '.');
     }
 }

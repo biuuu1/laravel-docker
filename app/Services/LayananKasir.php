@@ -4,94 +4,196 @@ declare(strict_types=1);
 
 namespace App\Services;
 
-use App\Contracts\RepositoriMember;
 use App\Contracts\RepositoriProduk;
 use App\Contracts\RepositoriTransaksi;
-use App\Exceptions\MemberTidakDitemukan;
+use App\Domain\MetodeBayar;
+use App\Domain\Uang;
 use App\Exceptions\PembayaranKurang;
 use App\Exceptions\ProdukTidakDitemukan;
 use App\Exceptions\StokTidakCukup;
+use App\Exceptions\TransaksiSudahDibatalkan;
+use App\Exceptions\TransaksiTidakDitemukan;
 
 final class LayananKasir
 {
     public function __construct(
-        private RepositoriProduk $produk,
-        private RepositoriMember $member,
-        private RepositoriTransaksi $transaksi,
-    ) {
-    }
+        private readonly RepositoriProduk $produk,
+        private readonly RepositoriTransaksi $transaksi,
+    ) {}
 
-    public function buat(
-        string $nomor,
-        array $items,
-        int $dibayar,
-        ?string $kodeMember = null,
-    ): array {
-        $detail = [];
-        $total = 0;
+    public function hitung(array $item, bool $member = false): array
+    {
+        $minimalGrosir = (int) config('pos.grosir.minimal_kuantitas');
+        $persenGrosir = (float) config('pos.grosir.persen');
+        $baris = [];
+        $subtotal = Uang::nol();
+        $diskonItem = Uang::nol();
 
-        foreach ($items as $item) {
-            $produk = $this->produk->cari((int) ($item['produk_id'] ?? 0));
+        foreach ($item as $masukan) {
+            $produk = $this->produk->cariSku($masukan['sku']);
 
             if ($produk === null) {
-                throw new ProdukTidakDitemukan();
+                throw new ProdukTidakDitemukan($masukan['sku']);
             }
 
-            $jumlah = (int) ($item['jumlah'] ?? 0);
+            $kuantitas = (int) $masukan['kuantitas'];
 
-            if ($jumlah <= 0) {
-                continue;
+            if ($kuantitas > $produk['stok']) {
+                throw new StokTidakCukup(
+                    $produk['sku'],
+                    $kuantitas,
+                    $produk['stok'],
+                );
             }
 
-            if ($jumlah > $produk['stok']) {
-                throw new StokTidakCukup();
-            }
+            $hargaSatuan = new Uang($produk['harga']);
+            $totalBaris = $hargaSatuan->kali($kuantitas);
 
-            $subtotal = $produk['harga'] * $jumlah;
-            $total += $subtotal;
+            $diskonBaris = $kuantitas >= $minimalGrosir
+                ? $totalBaris->persen($persenGrosir)
+                : Uang::nol();
 
-            $detail[] = [
-                'produk_id' => $produk['id'],
+            $subtotal = $subtotal->tambah($totalBaris);
+            $diskonItem = $diskonItem->tambah($diskonBaris);
+
+            $baris[] = [
+                'sku' => $produk['sku'],
                 'nama' => $produk['nama'],
-                'harga' => $produk['harga'],
-                'jumlah' => $jumlah,
-                'subtotal' => $subtotal,
+                'harga_satuan' => $hargaSatuan->rupiah,
+                'kuantitas' => $kuantitas,
+                'diskon' => $diskonBaris->rupiah,
+                'total' => $totalBaris->kurang($diskonBaris)->rupiah,
+                'total_format' => $totalBaris->kurang($diskonBaris)->format(),
             ];
         }
 
-        $dataMember = null;
+        $diskonMember = $member
+            ? $subtotal->kurang($diskonItem)->persen(
+                (float) config('pos.member.persen')
+            )
+            : Uang::nol();
 
-        if ($kodeMember !== null) {
-            $dataMember = $this->member->cari($kodeMember);
+        $totalDiskon = $diskonItem->tambah($diskonMember);
+        $dpp = $subtotal->kurang($totalDiskon);
+        $ppn = $dpp->persen((float) config('pos.ppn_persen'));
+        $total = $dpp->tambah($ppn);
+        $totalBayar = $total->bulatkanKeAtas(
+            (int) config('pos.pembulatan')
+        );
 
-            if ($dataMember === null) {
-                throw new MemberTidakDitemukan();
-            }
+        return [
+            'item' => $baris,
+            'subtotal' => $subtotal->rupiah,
+            'diskon_grosir' => $diskonItem->rupiah,
+            'diskon_member' => $diskonMember->rupiah,
+            'total_diskon' => $totalDiskon->rupiah,
+            'dpp' => $dpp->rupiah,
+            'ppn' => $ppn->rupiah,
+            'total' => $total->rupiah,
+            'pembulatan' => $totalBayar->kurang($total)->rupiah,
+            'total_bayar' => $totalBayar->rupiah,
+            'total_bayar_format' => $totalBayar->format(),
+        ];
+    }
+
+    public function proses(array $data, string $kasir): array
+    {
+        $metode = MetodeBayar::from($data['metode_bayar']);
+        $member = (bool) ($data['member'] ?? false);
+
+        $rincian = $this->hitung($data['item'], $member);
+        $totalBayar = new Uang($rincian['total_bayar']);
+
+        $dibayar = match ($metode->butuhKembalian()) {
+            true => new Uang((int) ($data['dibayar'] ?? 0)),
+            false => $totalBayar,
+        };
+
+        if ($dibayar->kurangDari($totalBayar)) {
+            throw new PembayaranKurang(
+                $totalBayar->kurang($dibayar)->rupiah
+            );
         }
 
-        if ($dibayar < $total) {
-            throw new PembayaranKurang();
+        $transaksi = array_merge([
+            'nomor' => $this->nomorBaru(),
+            'waktu' => now()->toIso8601String(),
+            'kasir' => $kasir,
+            'member' => $member,
+            'metode_bayar' => $metode->value,
+            'metode_label' => $metode->label(),
+            'status' => 'selesai',
+        ], $rincian, [
+            'dibayar' => $dibayar->rupiah,
+            'kembalian' => $dibayar->kurang($totalBayar)->rupiah,
+        ]);
+
+        $this->transaksi->simpan($transaksi);
+
+        return $transaksi;
+    }
+
+    public function batalkan(
+        string $nomor,
+        string $alasan,
+        string $olehKasir
+    ): array {
+        $transaksi = $this->transaksi->cariNomor($nomor);
+
+        if ($transaksi === null) {
+            throw new TransaksiTidakDitemukan($nomor);
         }
 
-        $data = [
-            'nomor' => $nomor,
-            'member' => $dataMember,
-            'detail' => $detail,
-            'total' => $total,
-            'dibayar' => $dibayar,
-            'kembalian' => $dibayar - $total,
+        if ($transaksi['status'] === 'batal') {
+            throw new TransaksiSudahDibatalkan($nomor);
+        }
+
+        $perubahan = [
+            'status' => 'batal',
+            'alasan_batal' => $alasan,
+            'dibatalkan_oleh' => $olehKasir,
+            'dibatalkan_pada' => now()->toIso8601String(),
         ];
 
-        return $this->transaksi->simpan($data);
+        $this->transaksi->perbarui($nomor, $perubahan);
+
+        return array_merge($transaksi, $perubahan);
     }
 
-    public function cari(string $nomor): ?array
+    public function transaksiTanggal(string $tanggal): array
     {
-        return $this->transaksi->cari($nomor);
+        return array_values(array_filter(
+            $this->transaksi->semua(),
+            static fn (array $t): bool => str_starts_with(
+                $t['waktu'],
+                $tanggal
+            ),
+        ));
     }
 
-    public function semua(): array
+    public function cari(string $nomor): array
     {
-        return $this->transaksi->semua();
+        $transaksi = $this->transaksi->cariNomor($nomor);
+
+        if ($transaksi === null) {
+            throw new TransaksiTidakDitemukan($nomor);
+        }
+
+        return $transaksi;
+    }
+
+    private function nomorBaru(): string
+    {
+        $tanggal = now()->format('Ymd');
+
+        $urut = count(array_filter(
+            $this->transaksi->semua(),
+            static fn (array $t): bool => str_starts_with(
+                $t['nomor'],
+                "POS-{$tanggal}"
+            ),
+        )) + 1;
+
+        return sprintf('POS-%s-%04d', $tanggal, $urut);
     }
 }

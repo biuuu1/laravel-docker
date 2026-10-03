@@ -8,9 +8,9 @@ interface RepositoriTransaksi
 {
     public function semua(): array;
 
-    public function cari(string $nomor): ?array;
+    public function cariNomor(string $nomor): ?array;
 
-    public function simpan(array $transaksi): array;
+    public function simpan(array $transaksi): void;
 
-    public function perbarui(string $nomor, array $transaksi): array;
+    public function perbarui(string $nomor, array $perubahan): void;
 }
