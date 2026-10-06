@@ -10,8 +10,7 @@ final class LayananMember
 {
     public function __construct(
         private RepositoriMember $member,
-    ) {
-    }
+    ) {}
 
     public function cari(string $kode): ?array
     {

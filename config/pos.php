@@ -1,6 +1,7 @@
 <?php
 
 return [
+    'nama_toko' => env('POS_NAMA_TOKO', 'Barokah Mart Solo'),
     'ppn_persen' => (float) env('POS_PPN_PERSEN', 11),
 
     'pembulatan' => (int) env('POS_PEMBULATAN', 100),

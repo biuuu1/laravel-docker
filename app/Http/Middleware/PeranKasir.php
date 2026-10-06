@@ -25,7 +25,7 @@ final class PeranKasir
             return response()->json([
                 'kesalahan' => 'peran_tidak_berwenang',
                 'pesan' => 'Aksi ini hanya boleh dilakukan oleh: '
-                    . implode(', ', $peranDiizinkan) . '.',
+                    .implode(', ', $peranDiizinkan).'.',
                 'peran_anda' => $kasir['peran'] ?? null,
             ], 403);
         }
