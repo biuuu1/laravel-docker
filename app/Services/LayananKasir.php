@@ -7,12 +7,14 @@ namespace App\Services;
 use App\Contracts\RepositoriProduk;
 use App\Contracts\RepositoriTransaksi;
 use App\Domain\MetodeBayar;
+use App\Domain\StatusTransaksi;
 use App\Domain\Uang;
 use App\Exceptions\PembayaranKurang;
 use App\Exceptions\ProdukTidakDitemukan;
 use App\Exceptions\StokTidakCukup;
 use App\Exceptions\TransaksiSudahDibatalkan;
 use App\Exceptions\TransaksiTidakDitemukan;
+use Illuminate\Support\Facades\DB;
 
 final class LayananKasir
 {
@@ -98,39 +100,62 @@ final class LayananKasir
 
     public function proses(array $data, string $kasir): array
     {
-        $metode = MetodeBayar::from($data['metode_bayar']);
-        $member = (bool) ($data['member'] ?? false);
+        return DB::transaction(function () use ($data, $kasir): array {
+            // 1. Kunci baris produk, lalu periksa ulang stoknya (AB-8).
+            foreach ($data['item'] as $baris) {
+                $tersedia = $this->produk->kunciStok($baris['sku']);
 
-        $rincian = $this->hitung($data['item'], $member);
-        $totalBayar = new Uang($rincian['total_bayar']);
+                if ($baris['kuantitas'] > $tersedia) {
+                    throw new StokTidakCukup(
+                        $baris['sku'],
+                        (int) $baris['kuantitas'],
+                        $tersedia,
+                    );
+                }
+            }
 
-        $dibayar = match ($metode->butuhKembalian()) {
-            true => new Uang((int) ($data['dibayar'] ?? 0)),
-            false => $totalBayar,
-        };
+            // 2. Hitung seluruh nilai uang (AB-1 s.d. AB-6).
+            $metode = MetodeBayar::from($data['metode_bayar']);
+            $member = (bool) ($data['member'] ?? false);
 
-        if ($dibayar->kurangDari($totalBayar)) {
-            throw new PembayaranKurang(
-                $totalBayar->kurang($dibayar)->rupiah
-            );
-        }
+            $rincian = $this->hitung($data['item'], $member);
 
-        $transaksi = array_merge([
-            'nomor' => $this->nomorBaru(),
-            'waktu' => now()->toIso8601String(),
-            'kasir' => $kasir,
-            'member' => $member,
-            'metode_bayar' => $metode->value,
-            'metode_label' => $metode->label(),
-            'status' => 'selesai',
-        ], $rincian, [
-            'dibayar' => $dibayar->rupiah,
-            'kembalian' => $dibayar->kurang($totalBayar)->rupiah,
-        ]);
+            $totalBayar = new Uang($rincian['total_bayar']);
 
-        $this->transaksi->simpan($transaksi);
+            $dibayar = $metode->butuhKembalian()
+                ? new Uang((int) ($data['dibayar'] ?? 0))
+                : $totalBayar;
 
-        return $transaksi;
+            if ($dibayar->kurangDari($totalBayar)) {
+                throw new PembayaranKurang(
+                    $totalBayar->kurang($dibayar)->rupiah
+                );
+            }
+
+            // 3. Susun struk lalu simpan.
+            $transaksi = array_merge([
+                'nomor' => $this->nomorBaru(),
+                'kasir' => $kasir,
+                'member' => $member,
+                'metode_bayar' => $metode->value,
+                'status' => StatusTransaksi::Selesai->value,
+            ], $rincian, [
+                'dibayar' => $dibayar->rupiah,
+                'kembalian' => $dibayar->kurang($totalBayar)->rupiah,
+            ]);
+
+            $this->transaksi->simpan($transaksi);
+
+            // 4. Kurangi stok (AB-11).
+            foreach ($data['item'] as $baris) {
+                $this->produk->ubahStok(
+                    $baris['sku'],
+                    -1 * (int) $baris['kuantitas'],
+                );
+            }
+
+            return $this->transaksi->cariNomor($transaksi['nomor']);
+        });
     }
 
     public function batalkan(
@@ -138,37 +163,48 @@ final class LayananKasir
         string $alasan,
         string $olehKasir
     ): array {
-        $transaksi = $this->transaksi->cariNomor($nomor);
+        return DB::transaction(function () use (
+            $nomor,
+            $alasan,
+            $olehKasir
+        ): array {
+            $transaksi = $this->transaksi->cariNomor($nomor);
 
-        if ($transaksi === null) {
-            throw new TransaksiTidakDitemukan($nomor);
-        }
+            if ($transaksi === null) {
+                throw new TransaksiTidakDitemukan($nomor);
+            }
 
-        if ($transaksi['status'] === 'batal') {
-            throw new TransaksiSudahDibatalkan($nomor);
-        }
+            if ($transaksi['status'] === StatusTransaksi::Batal->value) {
+                throw new TransaksiSudahDibatalkan($nomor);
+            }
 
-        $perubahan = [
-            'status' => 'batal',
-            'alasan_batal' => $alasan,
-            'dibatalkan_oleh' => $olehKasir,
-            'dibatalkan_pada' => now()->toIso8601String(),
-        ];
+            $this->transaksi->perbarui($nomor, [
+                'status' => StatusTransaksi::Batal->value,
+                'alasan_batal' => $alasan,
+                'dibatalkan_oleh' => $olehKasir,
+                'dibatalkan_pada' => now(),
+            ]);
 
-        $this->transaksi->perbarui($nomor, $perubahan);
+            // AB-11: barang kembali ke rak.
+            foreach ($transaksi['item'] as $baris) {
+                $this->produk->ubahStok(
+                    $baris['sku'],
+                    (int) $baris['kuantitas'],
+                );
+            }
 
-        return array_merge($transaksi, $perubahan);
+            return array_merge($transaksi, [
+                'status' => StatusTransaksi::Batal->value,
+                'alasan_batal' => $alasan,
+                'dibatalkan_oleh' => $olehKasir,
+                'dibatalkan_pada' => now(),
+            ]);
+        });
     }
 
     public function transaksiTanggal(string $tanggal): array
     {
-        return array_values(array_filter(
-            $this->transaksi->semua(),
-            static fn (array $t): bool => str_starts_with(
-                $t['waktu'],
-                $tanggal
-            ),
-        ));
+        return $this->transaksi->tanggal($tanggal);
     }
 
     public function cari(string $nomor): array
@@ -184,16 +220,13 @@ final class LayananKasir
 
     private function nomorBaru(): string
     {
-        $tanggal = now()->format('Ymd');
+        $tanggal = now()->format('Y-m-d');
+        $urut = $this->transaksi->urutanBerikutnya($tanggal);
 
-        $urut = count(array_filter(
-            $this->transaksi->semua(),
-            static fn (array $t): bool => str_starts_with(
-                $t['nomor'],
-                "POS-{$tanggal}"
-            ),
-        )) + 1;
-
-        return sprintf('POS-%s-%04d', $tanggal, $urut);
+        return sprintf(
+            'POS-%s-%04d',
+            str_replace('-', '', $tanggal),
+            $urut
+        );
     }
 }

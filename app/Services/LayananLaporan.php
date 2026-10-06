@@ -4,73 +4,71 @@ declare(strict_types=1);
 
 namespace App\Services;
 
-use App\Contracts\RepositoriTransaksi;
+use App\Domain\Uang;
+use App\Models\ItemTransaksi;
+use App\Models\Transaksi;
+use Illuminate\Support\Facades\DB;
 
 final class LayananLaporan
 {
-    public function __construct(
-        private readonly RepositoriTransaksi $transaksi,
-    ) {}
-
+    /** @return array<string, mixed> */
     public function harian(string $tanggal): array
     {
-        $transaksi = array_values(array_filter(
-            $this->transaksi->semua(),
-            static fn (array $t): bool => str_starts_with(
-                $t['waktu'],
-                $tanggal,
-            ) && ($t['status'] ?? 'selesai') !== 'batal',
-        ));
+        $ringkas = Transaksi::query()
+            ->selesai()
+            ->tanggal($tanggal)
+            ->selectRaw('COUNT(*) AS jumlah')
+            ->selectRaw('COALESCE(SUM(total_bayar), 0) AS omzet')
+            ->selectRaw('COALESCE(SUM(ppn), 0) AS ppn')
+            ->selectRaw('COALESCE(SUM(total_diskon), 0) AS diskon')
+            ->first();
 
-        $jumlahTransaksi = count($transaksi);
-        $totalPenjualan = 0;
+        $perMetode = Transaksi::query()
+            ->selesai()
+            ->tanggal($tanggal)
+            ->groupBy('metode_bayar')
+            ->pluck(DB::raw('SUM(total_bayar)'), 'metode_bayar')
+            ->map(static fn ($nilai): int => (int) $nilai)
+            ->all();
 
-        foreach ($transaksi as $item) {
-            $totalPenjualan += (int) ($item['total_bayar'] ?? 0);
-        }
+        $jumlah = (int) $ringkas->jumlah;
+        $omzet = (int) $ringkas->omzet;
 
         return [
             'tanggal' => $tanggal,
-            'jumlah_transaksi' => $jumlahTransaksi,
-            'total_penjualan' => $totalPenjualan,
+            'jumlah_transaksi' => $jumlah,
+            'omzet' => $omzet,
+            'omzet_format' => (new Uang($omzet))->format(),
+            'total_diskon' => (int) $ringkas->diskon,
+            'total_ppn' => (int) $ringkas->ppn,
+            'rata_rata_struk' => $jumlah > 0 ? intdiv($omzet, $jumlah) : 0,
+            'per_metode_bayar' => $perMetode,
         ];
     }
 
+    /** @return array<int, array<string, mixed>> */
     public function terlaris(string $tanggal, int $batas = 5): array
     {
-        $transaksi = array_filter(
-            $this->transaksi->semua(),
-            static fn (array $t): bool => str_starts_with(
-                $t['waktu'],
-                $tanggal,
-            ) && ($t['status'] ?? 'selesai') !== 'batal',
-        );
-
-        $produk = [];
-
-        foreach ($transaksi as $transaksiItem) {
-            foreach ($transaksiItem['item'] ?? [] as $item) {
-                $sku = $item['sku'];
-
-                if (! isset($produk[$sku])) {
-                    $produk[$sku] = [
-                        'sku' => $sku,
-                        'nama' => $item['nama'],
-                        'kuantitas' => 0,
-                        'total' => 0,
-                    ];
-                }
-
-                $produk[$sku]['kuantitas'] += (int) $item['kuantitas'];
-                $produk[$sku]['total'] += (int) $item['total'];
-            }
-        }
-
-        usort(
-            $produk,
-            static fn (array $a, array $b): int => $b['kuantitas'] <=> $a['kuantitas'],
-        );
-
-        return array_slice($produk, 0, $batas);
+        return ItemTransaksi::query()
+            ->join('transaksi', 'transaksi.id', '=', 'item_transaksi.transaksi_id')
+            ->where('transaksi.status', 'selesai')
+            ->whereDate('transaksi.created_at', $tanggal)
+            ->select([
+                'item_transaksi.sku',
+                'item_transaksi.nama_produk',
+            ])
+            ->selectRaw('SUM(item_transaksi.kuantitas) AS kuantitas')
+            ->selectRaw('SUM(item_transaksi.total) AS pendapatan')
+            ->groupBy('item_transaksi.sku', 'item_transaksi.nama_produk')
+            ->orderByDesc('kuantitas')
+            ->limit($batas)
+            ->get()
+            ->map(static fn ($baris): array => [
+                'sku' => $baris->sku,
+                'nama' => $baris->nama_produk,
+                'kuantitas' => (int) $baris->kuantitas,
+                'pendapatan' => (int) $baris->pendapatan,
+            ])
+            ->all();
     }
 }
