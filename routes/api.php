@@ -20,6 +20,26 @@ Route::prefix('v1/pos')
         Route::get('/produk', [ProdukController::class, 'index'])
             ->name('produk.index');
 
+        Route::middleware('peran:supervisor')->group(function () {
+            Route::post('/produk', [ProdukController::class, 'store'])
+                ->name('produk.store');
+
+            Route::put('/produk/{sku}', [ProdukController::class, 'update'])
+                ->where('sku', 'SKU-[0-9]{3}')
+                ->name('produk.update');
+
+            Route::delete('/produk/{sku}', [ProdukController::class, 'destroy'])
+                ->where('sku', 'SKU-[0-9]{3}')
+                ->name('produk.destroy');
+
+            Route::get('/produk-terhapus', [ProdukController::class, 'trashed'])
+                ->name('produk.trashed');
+
+            Route::post('/produk/{sku}/restore', [ProdukController::class, 'restore'])
+                ->where('sku', 'SKU-[0-9]{3}')
+                ->name('produk.restore');
+        });
+
         Route::get('/produk/{sku}', [ProdukController::class, 'show'])
             ->where('sku', 'SKU-[0-9]{3}')
             ->name('produk.show');
