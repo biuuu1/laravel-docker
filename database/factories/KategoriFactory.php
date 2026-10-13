@@ -11,11 +11,11 @@ final class KategoriFactory extends Factory
 {
     public function definition(): array
     {
-        $nama = $this->faker->unique()->words(2, true);
+        $kategori = $this->faker->randomElement(\App\Domain\Kategori::cases());
 
         return [
-            'kode' => Str::slug($nama, '_'),
-            'nama' => ucwords($nama),
+            'kode' => $kategori->value,
+            'nama' => $kategori->label(),
             'aktif' => true,
         ];
     }
@@ -23,5 +23,11 @@ final class KategoriFactory extends Factory
     public function nonaktif(): static
     {
         return $this->state(fn () => ['aktif' => false]);
+    }
+
+    /** Kategori aktif yang siap digunakan di katalog. */
+    public function aktif(): static
+    {
+        return $this->state(fn () => ['aktif' => true]);
     }
 }

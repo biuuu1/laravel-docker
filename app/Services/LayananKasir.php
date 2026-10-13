@@ -25,6 +25,8 @@ final class LayananKasir
 
     public function hitung(array $item, bool $member = false): array
     {
+        $item = $this->gabungkanItem($item);
+
         $minimalGrosir = (int) config('pos.grosir.minimal_kuantitas');
         $persenGrosir = (float) config('pos.grosir.persen');
         $baris = [];
@@ -101,14 +103,22 @@ final class LayananKasir
     public function proses(array $data, string $kasir): array
     {
         return DB::transaction(function () use ($data, $kasir): array {
-            // 1. Kunci baris produk, lalu periksa ulang stoknya (AB-8).
-            foreach ($data['item'] as $baris) {
-                $tersedia = $this->produk->kunciStok($baris['sku']);
+            $item = $this->gabungkanItem($data['item']);
 
-                if ($baris['kuantitas'] > $tersedia) {
+            // 1. Kunci baris produk, lalu periksa ulang stoknya (AB-8).
+            foreach ($item as $baris) {
+                $sku = strtoupper(trim((string) $baris['sku']));
+                $kuantitas = (int) $baris['kuantitas'];
+                $tersedia = $this->produk->kunciStok($sku);
+
+                if ($tersedia === null) {
+                    throw new ProdukTidakDitemukan($sku);
+                }
+
+                if ($kuantitas > $tersedia) {
                     throw new StokTidakCukup(
-                        $baris['sku'],
-                        (int) $baris['kuantitas'],
+                        $sku,
+                        $kuantitas,
                         $tersedia,
                     );
                 }
@@ -118,7 +128,7 @@ final class LayananKasir
             $metode = MetodeBayar::from($data['metode_bayar']);
             $member = (bool) ($data['member'] ?? false);
 
-            $rincian = $this->hitung($data['item'], $member);
+            $rincian = $this->hitung($item, $member);
 
             $totalBayar = new Uang($rincian['total_bayar']);
 
@@ -147,7 +157,7 @@ final class LayananKasir
             $this->transaksi->simpan($transaksi);
 
             // 4. Kurangi stok (AB-11).
-            foreach ($data['item'] as $baris) {
+            foreach ($item as $baris) {
                 $this->produk->ubahStok(
                     $baris['sku'],
                     -1 * (int) $baris['kuantitas'],
@@ -168,7 +178,7 @@ final class LayananKasir
             $alasan,
             $olehKasir
         ): array {
-            $transaksi = $this->transaksi->cariNomor($nomor);
+            $transaksi = $this->transaksi->kunciNomor($nomor);
 
             if ($transaksi === null) {
                 throw new TransaksiTidakDitemukan($nomor);
@@ -228,5 +238,29 @@ final class LayananKasir
             str_replace('-', '', $tanggal),
             $urut
         );
+    }
+
+    private function gabungkanItem(array $item): array
+    {
+        $gabungan = [];
+
+        foreach ($item as $masukan) {
+            $sku = strtoupper(trim((string) $masukan['sku']));
+            $kuantitas = (int) $masukan['kuantitas'];
+
+            if (isset($gabungan[$sku])) {
+                $gabungan[$sku]['kuantitas'] += $kuantitas;
+            } else {
+                $gabungan[$sku] = [
+                    'sku' => $sku,
+                    'kuantitas' => $kuantitas,
+                ];
+            }
+        }
+
+        // Urutan konsisten saat mengunci beberapa produk.
+        ksort($gabungan);
+
+        return array_values($gabungan);
     }
 }

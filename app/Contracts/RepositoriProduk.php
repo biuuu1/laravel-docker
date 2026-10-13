@@ -10,7 +10,7 @@ interface RepositoriProduk
 
     public function cariSku(string $sku): ?array;
 
-    public function kunciStok(string $sku): int;
+    public function kunciStok(string $sku): ?int;
 
     public function ubahStok(string $sku, int $selisih): void;
 }

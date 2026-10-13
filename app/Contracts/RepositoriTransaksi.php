@@ -10,6 +10,8 @@ interface RepositoriTransaksi
 
     public function cariNomor(string $nomor): ?array;
 
+    public function kunciNomor(string $nomor): ?array;
+
     public function simpan(array $transaksi): void;
 
     public function perbarui(string $nomor, array $perubahan): void;

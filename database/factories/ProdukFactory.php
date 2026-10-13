@@ -12,9 +12,13 @@ final class ProdukFactory extends Factory
     public function definition(): array
     {
         return [
-            // Bila kategori_id tidak diberikan pemanggil, factory membuat
-            // kategori baru sendiri sehingga kunci asing tidak pernah kosong.
-            'kategori_id' => Kategori::factory(),
+            // Gunakan kategori yang sudah ada agar kode enum tidak duplikat.
+            // Jika tabel kategori kosong, buat satu kategori valid terlebih dahulu.
+            'kategori_id' => function () {
+                $kategori = Kategori::query()->inRandomOrder()->first();
+
+                return $kategori?->id ?? Kategori::factory()->create()->id;
+            },
             'sku' => 'SKU-' . $this->faker->unique()->numberBetween(100, 999),
             'nama' => ucwords($this->faker->words(3, true)),
             // Harga dibulatkan ke ratusan agar realistis sebagai harga rak

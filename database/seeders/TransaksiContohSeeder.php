@@ -11,6 +11,14 @@ final class TransaksiContohSeeder extends Seeder
 {
     public function run(LayananKasir $kasir): void
     {
+        // Jangan membuat transaksi contoh berulang kali.
+        if (\App\Models\Transaksi::query()->exists()) {
+            $this->command?->warn(
+                'Seeder transaksi dilewati karena tabel transaksi sudah berisi data.'
+            );
+
+            return;
+        }
         // Struk 1 — member, tunai, satu baris memenuhi syarat diskon grosir
         $kasir->proses([
             'item' => [

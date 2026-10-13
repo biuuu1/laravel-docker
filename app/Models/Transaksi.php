@@ -44,6 +44,11 @@ final class Transaksi extends Model
         'dibatalkan_pada' => 'datetime',
     ];
 
+    public function itemTransaksi(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(ItemTransaksi::class, 'transaksi_id');
+    }
+
     public function scopeSelesai($query)
     {
         return $query->where('status', StatusTransaksi::Selesai);

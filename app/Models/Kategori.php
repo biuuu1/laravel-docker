@@ -22,14 +22,15 @@ final class Kategori extends Model
     ];
 
     protected $casts = [
+        'kode' => EnumKategori::class,
         'aktif' => 'boolean',
     ];
 
-    /** Menjembatani baris tabel dengan enum domain. */
-    public function enum(): EnumKategori
+    public function produk(): \Illuminate\Database\Eloquent\Relations\HasMany
     {
-        return EnumKategori::from($this->kode);
+        return $this->hasMany(Produk::class, 'kategori_id');
     }
+
 
     public function scopeAktif(Builder $query): Builder
     {

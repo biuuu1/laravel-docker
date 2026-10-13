@@ -30,6 +30,16 @@ final class Produk extends Model
         'aktif' => 'boolean',
     ];
 
+    public function kategori(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(Kategori::class, 'kategori_id');
+    }
+
+    public function itemTransaksi(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(ItemTransaksi::class, 'produk_id');
+    }
+
     public function scopeAktif(Builder $query): Builder
     {
         return $query->where('produk.aktif', true);

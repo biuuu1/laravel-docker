@@ -8,6 +8,7 @@ use App\Domain\Kategori as EnumKategori;
 use App\Models\Kategori;
 use App\Models\Produk;
 use Illuminate\Database\Seeder;
+use RuntimeException;
 
 final class KategoriProdukSeeder extends Seeder
 {
@@ -36,7 +37,7 @@ final class KategoriProdukSeeder extends Seeder
         }
 
         foreach (self::PRODUK as [$sku, $nama, $kode, $harga, $stok]) {
-            Produk::updateOrCreate(
+            $produk = Produk::updateOrCreate(
                 ['sku' => $sku],
                 [
                     'kategori_id' => $kategori[$kode]->id,
@@ -44,19 +45,59 @@ final class KategoriProdukSeeder extends Seeder
                     'harga' => $harga,
                     'aktif' => true,
                 ],
-            )->forceFill(['stok' => $stok])->save();
+            );
+
+            if ($produk->wasRecentlyCreated) {
+                $produk->forceFill(['stok' => $stok])->save();
+            }
         }
 
-        Produk::factory()->count(14)->create([
-            'kategori_id' => $kategori['makanan']->id,
-        ]);
+        // Pastikan produk factory tidak dibuat berulang kali.
+        $produkAcuan = array_column(self::PRODUK, 0);
 
-        Produk::factory()->grosir()->count(4)->create([
-            'kategori_id' => $kategori['minuman']->id,
-        ]);
+        $produkAcak = Produk::query()
+            ->whereNotIn('sku', $produkAcuan)
+            ->get(['sku', 'kategori_id', 'harga', 'stok']);
 
-        Produk::factory()->habis()->count(2)->create([
-            'kategori_id' => $kategori['alat_tulis']->id,
-        ]);
+        if ($produkAcak->isEmpty()) {
+            Produk::factory()->count(20)->create([
+                'kategori_id' => $kategori['makanan']->id,
+            ]);
+
+            Produk::factory()->grosir()->count(4)->create([
+                'kategori_id' => $kategori['minuman']->id,
+            ]);
+
+            Produk::factory()->habis()->count(2)->create([
+                'kategori_id' => $kategori['alat_tulis']->id,
+            ]);
+        } else {
+            $perKategori = $produkAcak->groupBy('kategori_id');
+
+            $makanan = $perKategori->get($kategori['makanan']->id, collect());
+            $minuman = $perKategori->get($kategori['minuman']->id, collect());
+            $alatTulis = $perKategori->get($kategori['alat_tulis']->id, collect());
+
+            $lengkap =
+                $produkAcak->count() === 26
+                && $makanan->count() === 20
+                && $minuman->count() === 4
+                && $alatTulis->count() === 2
+                && $makanan->every(fn ($p) => $p->stok >= 5 && $p->stok <= 300)
+                && $minuman->every(
+                    fn ($p) => $p->harga >= 2000
+                        && $p->harga <= 6000
+                        && $p->stok >= 300
+                        && $p->stok <= 900
+                )
+                && $alatTulis->every(fn ($p) => $p->stok === 0);
+
+            if (! $lengkap) {
+                throw new RuntimeException(
+                    'Data produk factory tidak lengkap atau tidak sesuai pola seeder. '
+                    . 'Seeder dihentikan agar tidak membuat produk ganda.'
+                );
+            }
+        }
     }
 }

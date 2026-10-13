@@ -30,6 +30,16 @@ final class RepositoriTransaksiEloquent implements RepositoriTransaksi
         return $transaksi === null ? null : $this->keArray($transaksi);
     }
 
+    public function kunciNomor(string $nomor): ?array
+    {
+        $transaksi = Transaksi::query()
+            ->where('nomor', $nomor)
+            ->lockForUpdate()
+            ->first();
+
+        return $transaksi === null ? null : $this->keArray($transaksi);
+    }
+
     public function simpan(array $transaksi): void
     {
         $item = $transaksi['item'];

@@ -28,12 +28,14 @@ final class RepositoriProdukEloquent implements RepositoriProduk
         return $produk === null ? null : $this->keArray($produk);
     }
 
-    public function kunciStok(string $sku): int
+    public function kunciStok(string $sku): ?int
     {
-        return (int) Produk::query()
+        $produk = Produk::query()
             ->where('sku', strtoupper(trim($sku)))
             ->lockForUpdate()
-            ->value('stok');
+            ->first(['stok']);
+
+        return $produk === null ? null : (int) $produk->stok;
     }
 
     public function ubahStok(string $sku, int $selisih): void
