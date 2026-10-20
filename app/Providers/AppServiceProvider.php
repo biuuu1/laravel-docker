@@ -6,8 +6,8 @@ use App\Contracts\RepositoriMember;
 use App\Contracts\RepositoriProduk;
 use App\Contracts\RepositoriTransaksi;
 use App\Repositories\RepositoriMemberArray;
-use App\Repositories\RepositoriProdukArray;
-use App\Repositories\RepositoriTransaksiBerkas;
+use App\Repositories\RepositoriProdukEloquent;
+use App\Repositories\RepositoriTransaksiEloquent;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -16,7 +16,7 @@ class AppServiceProvider extends ServiceProvider
     {
         $this->app->bind(
             RepositoriProduk::class,
-            RepositoriProdukArray::class
+            RepositoriProdukEloquent::class
         );
 
         $this->app->bind(
@@ -26,7 +26,7 @@ class AppServiceProvider extends ServiceProvider
 
         $this->app->singleton(
             RepositoriTransaksi::class,
-            RepositoriTransaksiBerkas::class
+            RepositoriTransaksiEloquent::class
         );
     }
 

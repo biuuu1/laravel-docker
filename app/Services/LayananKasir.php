@@ -7,12 +7,14 @@ namespace App\Services;
 use App\Contracts\RepositoriProduk;
 use App\Contracts\RepositoriTransaksi;
 use App\Domain\MetodeBayar;
+use App\Domain\StatusTransaksi;
 use App\Domain\Uang;
 use App\Exceptions\PembayaranKurang;
 use App\Exceptions\ProdukTidakDitemukan;
 use App\Exceptions\StokTidakCukup;
 use App\Exceptions\TransaksiSudahDibatalkan;
 use App\Exceptions\TransaksiTidakDitemukan;
+use Illuminate\Support\Facades\DB;
 
 final class LayananKasir
 {
@@ -23,6 +25,8 @@ final class LayananKasir
 
     public function hitung(array $item, bool $member = false): array
     {
+        $item = $this->gabungkanItem($item);
+
         $minimalGrosir = (int) config('pos.grosir.minimal_kuantitas');
         $persenGrosir = (float) config('pos.grosir.persen');
         $baris = [];
@@ -98,39 +102,70 @@ final class LayananKasir
 
     public function proses(array $data, string $kasir): array
     {
-        $metode = MetodeBayar::from($data['metode_bayar']);
-        $member = (bool) ($data['member'] ?? false);
+        return DB::transaction(function () use ($data, $kasir): array {
+            $item = $this->gabungkanItem($data['item']);
 
-        $rincian = $this->hitung($data['item'], $member);
-        $totalBayar = new Uang($rincian['total_bayar']);
+            // 1. Kunci baris produk, lalu periksa ulang stoknya (AB-8).
+            foreach ($item as $baris) {
+                $sku = strtoupper(trim((string) $baris['sku']));
+                $kuantitas = (int) $baris['kuantitas'];
+                $tersedia = $this->produk->kunciStok($sku);
 
-        $dibayar = match ($metode->butuhKembalian()) {
-            true => new Uang((int) ($data['dibayar'] ?? 0)),
-            false => $totalBayar,
-        };
+                if ($tersedia === null) {
+                    throw new ProdukTidakDitemukan($sku);
+                }
 
-        if ($dibayar->kurangDari($totalBayar)) {
-            throw new PembayaranKurang(
-                $totalBayar->kurang($dibayar)->rupiah
-            );
-        }
+                if ($kuantitas > $tersedia) {
+                    throw new StokTidakCukup(
+                        $sku,
+                        $kuantitas,
+                        $tersedia,
+                    );
+                }
+            }
 
-        $transaksi = array_merge([
-            'nomor' => $this->nomorBaru(),
-            'waktu' => now()->toIso8601String(),
-            'kasir' => $kasir,
-            'member' => $member,
-            'metode_bayar' => $metode->value,
-            'metode_label' => $metode->label(),
-            'status' => 'selesai',
-        ], $rincian, [
-            'dibayar' => $dibayar->rupiah,
-            'kembalian' => $dibayar->kurang($totalBayar)->rupiah,
-        ]);
+            // 2. Hitung seluruh nilai uang (AB-1 s.d. AB-6).
+            $metode = MetodeBayar::from($data['metode_bayar']);
+            $member = (bool) ($data['member'] ?? false);
 
-        $this->transaksi->simpan($transaksi);
+            $rincian = $this->hitung($item, $member);
 
-        return $transaksi;
+            $totalBayar = new Uang($rincian['total_bayar']);
+
+            $dibayar = $metode->butuhKembalian()
+                ? new Uang((int) ($data['dibayar'] ?? 0))
+                : $totalBayar;
+
+            if ($dibayar->kurangDari($totalBayar)) {
+                throw new PembayaranKurang(
+                    $totalBayar->kurang($dibayar)->rupiah
+                );
+            }
+
+            // 3. Susun struk lalu simpan.
+            $transaksi = array_merge([
+                'nomor' => $this->nomorBaru(),
+                'kasir' => $kasir,
+                'member' => $member,
+                'metode_bayar' => $metode->value,
+                'status' => StatusTransaksi::Selesai->value,
+            ], $rincian, [
+                'dibayar' => $dibayar->rupiah,
+                'kembalian' => $dibayar->kurang($totalBayar)->rupiah,
+            ]);
+
+            $this->transaksi->simpan($transaksi);
+
+            // 4. Kurangi stok (AB-11).
+            foreach ($item as $baris) {
+                $this->produk->ubahStok(
+                    $baris['sku'],
+                    -1 * (int) $baris['kuantitas'],
+                );
+            }
+
+            return $this->transaksi->cariNomor($transaksi['nomor']);
+        });
     }
 
     public function batalkan(
@@ -138,37 +173,48 @@ final class LayananKasir
         string $alasan,
         string $olehKasir
     ): array {
-        $transaksi = $this->transaksi->cariNomor($nomor);
+        return DB::transaction(function () use (
+            $nomor,
+            $alasan,
+            $olehKasir
+        ): array {
+            $transaksi = $this->transaksi->kunciNomor($nomor);
 
-        if ($transaksi === null) {
-            throw new TransaksiTidakDitemukan($nomor);
-        }
+            if ($transaksi === null) {
+                throw new TransaksiTidakDitemukan($nomor);
+            }
 
-        if ($transaksi['status'] === 'batal') {
-            throw new TransaksiSudahDibatalkan($nomor);
-        }
+            if ($transaksi['status'] === StatusTransaksi::Batal->value) {
+                throw new TransaksiSudahDibatalkan($nomor);
+            }
 
-        $perubahan = [
-            'status' => 'batal',
-            'alasan_batal' => $alasan,
-            'dibatalkan_oleh' => $olehKasir,
-            'dibatalkan_pada' => now()->toIso8601String(),
-        ];
+            $this->transaksi->perbarui($nomor, [
+                'status' => StatusTransaksi::Batal->value,
+                'alasan_batal' => $alasan,
+                'dibatalkan_oleh' => $olehKasir,
+                'dibatalkan_pada' => now(),
+            ]);
 
-        $this->transaksi->perbarui($nomor, $perubahan);
+            // AB-11: barang kembali ke rak.
+            foreach ($transaksi['item'] as $baris) {
+                $this->produk->ubahStok(
+                    $baris['sku'],
+                    (int) $baris['kuantitas'],
+                );
+            }
 
-        return array_merge($transaksi, $perubahan);
+            return array_merge($transaksi, [
+                'status' => StatusTransaksi::Batal->value,
+                'alasan_batal' => $alasan,
+                'dibatalkan_oleh' => $olehKasir,
+                'dibatalkan_pada' => now(),
+            ]);
+        });
     }
 
     public function transaksiTanggal(string $tanggal): array
     {
-        return array_values(array_filter(
-            $this->transaksi->semua(),
-            static fn (array $t): bool => str_starts_with(
-                $t['waktu'],
-                $tanggal
-            ),
-        ));
+        return $this->transaksi->tanggal($tanggal);
     }
 
     public function cari(string $nomor): array
@@ -184,16 +230,37 @@ final class LayananKasir
 
     private function nomorBaru(): string
     {
-        $tanggal = now()->format('Ymd');
+        $tanggal = now()->format('Y-m-d');
+        $urut = $this->transaksi->urutanBerikutnya($tanggal);
 
-        $urut = count(array_filter(
-            $this->transaksi->semua(),
-            static fn (array $t): bool => str_starts_with(
-                $t['nomor'],
-                "POS-{$tanggal}"
-            ),
-        )) + 1;
+        return sprintf(
+            'POS-%s-%04d',
+            str_replace('-', '', $tanggal),
+            $urut
+        );
+    }
 
-        return sprintf('POS-%s-%04d', $tanggal, $urut);
+    private function gabungkanItem(array $item): array
+    {
+        $gabungan = [];
+
+        foreach ($item as $masukan) {
+            $sku = strtoupper(trim((string) $masukan['sku']));
+            $kuantitas = (int) $masukan['kuantitas'];
+
+            if (isset($gabungan[$sku])) {
+                $gabungan[$sku]['kuantitas'] += $kuantitas;
+            } else {
+                $gabungan[$sku] = [
+                    'sku' => $sku,
+                    'kuantitas' => $kuantitas,
+                ];
+            }
+        }
+
+        // Urutan konsisten saat mengunci beberapa produk.
+        ksort($gabungan);
+
+        return array_values($gabungan);
     }
 }
